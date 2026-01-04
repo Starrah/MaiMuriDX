@@ -436,6 +436,14 @@ class SimaiSlideChain(SimaiNote):
                 if pad_states[pad] is not None:
                     assert len(pad_states[pad]) > 0 # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
                     for action in reversed(pad_states[pad]): # 为了保持和原来实现的一致性，数组中靠后action会优先被处理
+                        if self.cur_area_idx >= self.total_area_num - 1 and action.source == self and \
+                                not self.is_in_critical_range(now):
+                            # 如果最后一个判定区接收到的action是来自该星星自身的，则仅在它落在CP区间内时才正常处理。否则认为此action无效（当它不存在）
+                            # 这是为了解决如白南十字的超慢星星会被误判为内屏无理的情况。
+                            # 动机：内屏无理指的是星星被其他音符蹭没了的情况下所产生的无理，那假如一个音符是（在手模型的半径假设下）“被自己蹭没了”，这种情况不应视为无理。
+                            # 然而如果从根本上改变诸如手模型的形状等，可能会对其他部分产生更大的不可预测的影响。
+                            # 因此一个比较简单的方法就是：对于note自身产生的action，会确保它无法在CP区间之外“蹭”到判定区造成good。
+                            continue
                         self.pressing = pad
                         self.area_judge_actions[self.cur_area_idx] = (action, now)
                         if self.cur_area_idx >= self.total_area_num - 1:
@@ -462,6 +470,11 @@ class SimaiSlideChain(SimaiNote):
                 # 因此要对pad_states[pad]和pad_up_this_tick[pad]取并集
                 actions = (list(reversed(pad_states[pad])) if pad_states[pad] is not None else []) + ([pad_up_this_tick[pad]] if pad_up_this_tick[pad] is not None else [])
                 for action in actions:
+                    if self.cur_area_idx + 1 >= self.total_area_num - 1 and action.source == self and \
+                            not self.is_in_critical_range(now):
+                        # 如果最后一个判定区接收到的action是来自该星星自身的，则仅在它落在CP区间内时才正常处理。否则认为此action无效（当它不存在）。
+                        # 具体原因同上
+                        continue
                     self.pressing = pad
                     self.cur_area_idx += 1
                     self.area_judge_actions[self.cur_area_idx] = (action, now)
@@ -566,6 +579,11 @@ class SimaiWifi(SimaiNote):
                 if pad_states[pad] is not None:
                     assert len(pad_states[pad]) > 0 # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
                     for action in reversed(pad_states[pad]):
+                        if self.cur_area_idxes[lane] >= self.total_area_num - 1 and action.source == self and \
+                                not self.is_in_critical_range(now):
+                            # 如果最后一个判定区接收到的action是来自该星星自身的，则仅在它落在CP区间内时才正常处理。否则认为此action无效（当它不存在）
+                            # 具体原因参见SimaiSlideChain._progress_slide_once中的注释。
+                            continue
                         self.pressing[lane] = pad
                         self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (action, now)
                         if self.cur_area_idxes[lane] >= self.total_area_num - 1:
@@ -586,6 +604,11 @@ class SimaiWifi(SimaiNote):
                 # 对pad_states[pad]和pad_up_this_tick[pad]取并集，原因同SimaiSlideChain中的相同段落所述
                 actions = (list(reversed(pad_states[pad])) if pad_states[pad] is not None else []) + ([pad_up_this_tick[pad]] if pad_up_this_tick[pad] is not None else [])
                 for action in actions:
+                    if self.cur_area_idxes[lane] + 1 >= self.total_area_num - 1 and action.source == self and \
+                            not self.is_in_critical_range(now):
+                        # 如果最后一个判定区接收到的action是来自该星星自身的，则仅在它落在CP区间内时才正常处理。否则认为此action无效（当它不存在）。
+                        # 具体原因同上
+                        continue
                     self.pressing[lane] = pad
                     self.cur_area_idxes[lane] += 1
                     self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (action, now)
