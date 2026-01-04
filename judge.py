@@ -1,4 +1,4 @@
-from typing import NamedTuple
+from typing import NamedTuple, List
 from collections.abc import Sequence, Iterable
 
 from core import JudgeResult, Pad, REPORT_WRITER
@@ -249,7 +249,8 @@ class JudgeManager:
         # 记录本tick触发的pad down事件及其来源
         pad_up_source_dict: dict[Pad, Action | None] = {p: None for p in Pad}
         # 记录下一tick初始时各激活触摸板的来源
-        pad_source_dict: dict[Pad, Action | None] = {p: None for p in Pad}
+        # 把所有的action来源以数组的形式记录下来，以便后续对超慢星星等情况的适配。
+        pad_source_dict: dict[Pad, List[Action] | None] = {p: None for p in Pad}
         # 说明：pad_down_source_dict之后会进行迭代操作，故只有真正发生了pad down的pad才会加入其中（dict当set用）
         #      pad_up_source_dict与pad_source_dict之后会传参用作look up，故所有pad都加入其中，预先置为None
 
@@ -299,7 +300,8 @@ class JudgeManager:
             for pad in Pad:
                 if abs(pad.vec - center) <= (pad.radius + radius):
                     next_pad_state |= 1 << pad.value
-                    pad_source_dict[pad] = action
+                    if pad_source_dict[pad] is None: pad_source_dict[pad] = []
+                    pad_source_dict[pad].append(action)
             # 记录手数
             if action.require_two_hands:
                 hand_count += 2
@@ -335,9 +337,9 @@ class JudgeManager:
         for pad in Pad:
             if pad_down_this_tick & (1 << pad.value):
                 # 因为新按下的判定区肯定已经按下，直接把之前记录过的action拿来用
-                pad_down_source_dict[pad] = pad_source_dict[pad]
+                pad_down_source_dict[pad] = pad_source_dict[pad][-1]
             if pad_up_this_tick & (1 << pad.value):
-                pad_up_source_dict[pad] = self.last_pad_source[pad]
+                pad_up_source_dict[pad] = self.last_pad_source[pad][-1]
 
         self.pad_states = next_pad_state
         self.last_pad_source = pad_source_dict

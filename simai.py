@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from itertools import accumulate
@@ -32,7 +32,7 @@ class SimaiNote(metaclass=ABCMeta):
         self.combo = combo
 
     @abstractmethod
-    def update(self, now: float, pad_states: "dict[Pad, Action | None]",
+    def update(self, now: float, pad_states: "dict[Pad, List[Action] | None]",
                pad_up_this_tick: "dict[Pad, Action | None]") -> None:
         """
         Update note routine.
@@ -88,7 +88,7 @@ class SimaiSimpleNote(SimaiNote):
     def _get_critical_delta(self):
         raise NotImplementedError
 
-    def update(self, now: float, pad_states: "dict[Pad, Action | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
+    def update(self, now: float, pad_states: "dict[Pad, List[Action] | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
         if self.judge != JudgeResult.Not_Yet:
             return
         if now - self.moment > self._get_available_delta():
@@ -223,7 +223,7 @@ class SimaiTouchGroup(SimaiNote):
     def set_on_slide(self, on_slide: bool):
         self.on_slide = on_slide
 
-    def update(self, now: float, pad_states: "dict[Pad, Action | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
+    def update(self, now: float, pad_states: "dict[Pad, List[Action] | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
         n = 0
         for touch in self.children:
             touch.update(now, pad_states, pad_up_this_tick)
@@ -363,7 +363,13 @@ class SimaiSlideChain(SimaiNote):
     def finish(self, now: float) -> bool:
         return now > self.end_moment + SLIDE_AVAILABLE or self.judge == JudgeResult.Bad
 
-    def update(self, now: float, pad_states: "dict[Pad, Action | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
+    def is_in_critical_range(self, now: float):
+        """判断当前时刻是否处于星星的大P区间内"""
+        delta = now - self.critical_moment
+        # SLIDE_DELTA_SHIFT的具体含义看开发笔记里的maimai判定全解
+        return (abs(delta) <= self.critical_delta) or (abs(delta + SLIDE_DELTA_SHIFT) <= SLIDE_CRITICAL)
+
+    def update(self, now: float, pad_states: "dict[Pad, List[Action] | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
         if self.judge != JudgeResult.Not_Yet:
             return
         if now < self.available_moment:
@@ -378,12 +384,7 @@ class SimaiSlideChain(SimaiNote):
         if self.cur_area_idx >= self.total_area_num:
             # slide划完了，进行判定
             self.judge_moment = now
-            delta = now - self.critical_moment
-            # SLIDE_DELTA_SHIFT的具体含义看开发笔记里的maimai判定全解
-            if (abs(delta) <= self.critical_delta) or (abs(delta + SLIDE_DELTA_SHIFT) <= SLIDE_CRITICAL):
-                self.judge = JudgeResult.Critical
-            else:
-                self.judge = JudgeResult.Bad
+            self.judge = JudgeResult.Critical if self.is_in_critical_range(now) else JudgeResult.Bad
             return
 
         if now > self.end_moment + SLIDE_AVAILABLE:
@@ -423,7 +424,7 @@ class SimaiSlideChain(SimaiNote):
         # P.S. 1-3-5 is not identical to 1V35, since 1-3-5 is not a V-shape slide, and its length is more than 3
         #      so A2/B2, A4/B4 are both skippable
 
-    def _progress_slide_once(self, now: float, pad_states: "dict[Pad, Action | None]",
+    def _progress_slide_once(self, now: float, pad_states: "dict[Pad, List[Action] | None]",
                              pad_up_this_tick: "dict[Pad, Action | None]") -> bool:
         # 进行一轮判定区检查
         # pad_states 记录的是一个pad有没有被按下，如果有value就是导致按下的action，否则value就是None
@@ -433,16 +434,18 @@ class SimaiSlideChain(SimaiNote):
             # check pad down
             for pad in self.judge_sequence[self.cur_area_idx]:
                 if pad_states[pad] is not None:
-                    self.pressing = pad
-                    self.area_judge_actions[self.cur_area_idx] = (pad_states[pad], now)
-                    if self.cur_area_idx >= self.total_area_num - 1:
-                        # last area
-                        self.cur_area_idx += 1
-                        self.judge_action = pad_states[pad]
-                    if self.partition[self.cur_area_idx]:
-                        # last area of a segment
-                        self.cur_segment_idx += 1
-                    return True
+                    assert len(pad_states[pad]) > 0 # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
+                    for action in reversed(pad_states[pad]): # 为了保持和原来实现的一致性，数组中靠后action会优先被处理
+                        self.pressing = pad
+                        self.area_judge_actions[self.cur_area_idx] = (action, now)
+                        if self.cur_area_idx >= self.total_area_num - 1:
+                            # last area
+                            self.cur_area_idx += 1
+                            self.judge_action = action
+                        if self.partition[self.cur_area_idx]:
+                            # last area of a segment
+                            self.cur_segment_idx += 1
+                        return True
 
         else:
             # check pad up
@@ -454,11 +457,14 @@ class SimaiSlideChain(SimaiNote):
         if self._can_skip_area():
             # try to skip current area
             for pad in self.judge_sequence[self.cur_area_idx + 1]:
+                assert pad_states[pad] is None or len(pad_states[pad]) > 0  # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
                 # if a pad has just been release in this tick, treat it as still being pressed
-                if pad_states[pad] is not None or pad_up_this_tick[pad] is not None:
+                # 因此要对pad_states[pad]和pad_up_this_tick[pad]取并集
+                actions = (list(reversed(pad_states[pad])) if pad_states[pad] is not None else []) + ([pad_up_this_tick[pad]] if pad_up_this_tick[pad] is not None else [])
+                for action in actions:
                     self.pressing = pad
                     self.cur_area_idx += 1
-                    self.area_judge_actions[self.cur_area_idx] = ((pad_states[pad] or pad_up_this_tick[pad]), now)
+                    self.area_judge_actions[self.cur_area_idx] = (action, now)
                     if self.cur_area_idx >= self.total_area_num - 1:
                         # last area
                         self.cur_area_idx += 1
@@ -521,7 +527,13 @@ class SimaiWifi(SimaiNote):
     def finish(self, now: float) -> bool:
         return now > self.end_moment + SLIDE_AVAILABLE or self.judge == JudgeResult.Bad
 
-    def update(self, now: float, pad_states: "dict[Pad, Action | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
+    def is_in_critical_range(self, now: float):
+        """判断当前时刻是否处于星星的大P区间内"""
+        delta = now - self.critical_moment
+        # SLIDE_DELTA_SHIFT的具体含义看开发笔记里的maimai判定全解
+        return (abs(delta) <= self.critical_delta) or (abs(delta + SLIDE_DELTA_SHIFT) <= SLIDE_CRITICAL)
+
+    def update(self, now: float, pad_states: "dict[Pad, List[Action] | None]", pad_up_this_tick: "dict[Pad, Action | None]"):
         if self.judge != JudgeResult.Not_Yet:
             return
         if now < self.available_moment:
@@ -538,8 +550,7 @@ class SimaiWifi(SimaiNote):
 
         if all(self.lane_finished) and self.pad_c_passed:
             self.judge_moment = now
-            delta = now - self.critical_moment
-            self.judge = JudgeResult.Critical if (abs(delta) <= self.critical_delta) else JudgeResult.Bad
+            self.judge = JudgeResult.Critical if self.is_in_critical_range(now) else JudgeResult.Bad
             return
 
         if now > self.end_moment + SLIDE_AVAILABLE:
@@ -547,19 +558,21 @@ class SimaiWifi(SimaiNote):
             self.judge = JudgeResult.Bad
             self.judge_moment = now
 
-    def _progress_lane_once(self, now: float, lane: int, pad_states: "dict[Pad, Action | None]",
+    def _progress_lane_once(self, now: float, lane: int, pad_states: "dict[Pad, List[Action] | None]",
                             pad_up_this_tick: "dict[Pad, Action | None]") -> bool:
         # 对某一轨进行一次判定区检查，基本上和slidechain的逻辑是一样的
         if self.pressing[lane] is None:
             for pad in self.info.tri_judge_sequence[lane][self.cur_area_idxes[lane]]:
                 if pad_states[pad] is not None:
-                    self.pressing[lane] = pad
-                    self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (pad_states[pad], now)
-                    if self.cur_area_idxes[lane] >= self.total_area_num - 1:
-                        self.cur_area_idxes[lane] += 1
-                        self.lane_finished[lane] = True
-                        self.judge_action = pad_states[pad]  # 最后完成的lane会覆写掉这个field
-                    return True
+                    assert len(pad_states[pad]) > 0 # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
+                    for action in reversed(pad_states[pad]):
+                        self.pressing[lane] = pad
+                        self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (action, now)
+                        if self.cur_area_idxes[lane] >= self.total_area_num - 1:
+                            self.cur_area_idxes[lane] += 1
+                            self.lane_finished[lane] = True
+                            self.judge_action = pad_states[pad]  # 最后完成的lane会覆写掉这个field
+                        return True
 
         else:
             if pad_states[self.pressing[lane]] is None:
@@ -569,12 +582,13 @@ class SimaiWifi(SimaiNote):
 
         if self.cur_area_idxes[lane] < self.total_area_num - 1:
             for pad in self.info.tri_judge_sequence[lane][self.cur_area_idxes[lane] + 1]:
-                if pad_states[pad] is not None or pad_up_this_tick[pad] is not None:
+                assert pad_states[pad] is None or len(pad_states[pad]) > 0  # 只是为了防止写出bug而用的断言，如果你看到此AssertionError，说明软件本身有bug
+                # 对pad_states[pad]和pad_up_this_tick[pad]取并集，原因同SimaiSlideChain中的相同段落所述
+                actions = (list(reversed(pad_states[pad])) if pad_states[pad] is not None else []) + ([pad_up_this_tick[pad]] if pad_up_this_tick[pad] is not None else [])
+                for action in actions:
                     self.pressing[lane] = pad
                     self.cur_area_idxes[lane] += 1
-                    self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (
-                        (pad_states[pad] or pad_up_this_tick[pad]), now
-                    )
+                    self.area_judge_actions[lane][self.cur_area_idxes[lane]] = (action, now)
                     if self.cur_area_idxes[lane] >= self.total_area_num - 1:
                         self.cur_area_idxes[lane] += 1
                         self.lane_finished[lane] = True
