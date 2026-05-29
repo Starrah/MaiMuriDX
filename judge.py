@@ -36,6 +36,13 @@ class TouchPoint(NamedTuple):
     source: "Action"
 
 
+def format_judge_timestamp(moment: float) -> str:
+    """Format a judge-tick moment as [MM:SSFff.ff], same as dynamic checks."""
+    s, f = divmod(moment / JUDGE_TPF, 60)
+    m, s = divmod(int(s), 60)
+    return "[%02d:%02dF%05.2f] " % (m, s, f)
+
+
 class StaticMuriChecker:
     @staticmethod
     def _flatten_touch_group(note_sequence: Sequence[SimaiNote]):
@@ -49,6 +56,7 @@ class StaticMuriChecker:
     def _overlap_record(note: SimaiNote, note2: SimaiNote) -> dict:
         return {
             "type": "Overlap",
+            "time": note.moment / JUDGE_TPS,
             "affected": {"line": note.cursor[0], "col": note.cursor[1], "note": note.cursor[2], "combo": note.combo},
             "cause": {"line": note2.cursor[0], "col": note2.cursor[1], "note": note2.cursor[2], "combo": note2.combo},
         }
@@ -57,6 +65,7 @@ class StaticMuriChecker:
     def _tap_on_slide_record(note: SimaiNote, slide: SimaiNote, delta: float) -> dict:
         return {
             "type": "TapOnSlide",
+            "time": note.moment / JUDGE_TPS,
             "affected": {"line": note.cursor[0], "col": note.cursor[1], "note": note.cursor[2], "combo": note.combo},
             "cause": {"line": slide.cursor[0], "col": slide.cursor[1], "note": slide.cursor[2], "combo": slide.combo},
             "delta": delta,
@@ -66,6 +75,7 @@ class StaticMuriChecker:
     def _slide_head_tap_record(note: SimaiNote, slide: SimaiNote, delta: float) -> dict:
         return {
             "type": "SlideHeadTap",
+            "time": note.moment / JUDGE_TPS,
             "affected": {"line": note.cursor[0], "col": note.cursor[1], "note": note.cursor[2], "combo": note.combo},
             "cause": {"line": slide.cursor[0], "col": slide.cursor[1], "note": slide.cursor[2], "combo": slide.combo},
             "delta": delta,
@@ -168,17 +178,18 @@ class StaticMuriChecker:
                             muri_records.append(cls._overlap_record(note, note2))
 
         for record in sorted(muri_records, key=(lambda x: (x["affected"]["line"], x["affected"]["col"]))):
+            ts = format_judge_timestamp(record["time"] * JUDGE_TPS)
             if record["type"] == "Overlap":
-                msg = "叠键无理：{combo}cb处\"{note}\"(L{line},C{col}) 与 ".format_map(record["affected"])
+                msg = ts + "叠键无理：{combo}cb处\"{note}\"(L{line},C{col}) 与 ".format_map(record["affected"])
                 msg += "{combo}cb处\"{note}\"(L{line},C{col}) 重叠".format_map(record["cause"])
                 REPORT_WRITER.writeln(msg)
             elif record["type"] == "SlideHeadTap":
-                msg = "外键无理：{combo}cb处\"{note}\"(L{line},C{col}) 可能被 ".format_map(record["affected"])
+                msg = ts + "外键无理：{combo}cb处\"{note}\"(L{line},C{col}) 可能被 ".format_map(record["affected"])
                 msg += "{combo}cb处\"{note}\"(L{line},C{col}) 蹭到 ".format_map(record["cause"])
                 msg += "(%+.0f ms)" % (record["delta"] * 1000 / JUDGE_TPS)
                 REPORT_WRITER.writeln(msg)
             elif record["type"] == "TapOnSlide":
-                msg = "撞尾无理：{combo}cb处\"{note}\"(L{line},C{col}) 可能被 ".format_map(record["affected"])
+                msg = ts + "撞尾无理：{combo}cb处\"{note}\"(L{line},C{col}) 可能被 ".format_map(record["affected"])
                 msg += "{combo}cb处\"{note}\"(L{line},C{col}) 蹭到 ".format_map(record["cause"])
                 msg += "(%+.0f ms)" % (record["delta"] * 1000 / JUDGE_TPS)
                 REPORT_WRITER.writeln(msg)
@@ -321,9 +332,11 @@ class JudgeManager:
                     }
                 )
 
+                combos = [a.source.combo for _0, _1, _2, a in this_frame_touch_points]
+                min_combo = min(combos)
                 s, f = divmod(self.timer / JUDGE_TPF, 60)
                 m, s = divmod(int(s), 60)
-                msg = "[%02d:%02dF%05.2f] 多押无理：" % (m, s, f)
+                msg = "[%02d:%02dF%05.2f] %dcb处多押无理：" % (m, s, f, min_combo)
                 msg += "下列note可能形成了%d押\n    " % hand_count
                 msg += " ".join("\"{2}\"(L{0},C{1})".format(*n) for n in sorted(affected_cursors))
                 REPORT_WRITER.writeln(msg)
