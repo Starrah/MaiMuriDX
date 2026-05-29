@@ -1,6 +1,7 @@
 import pathlib
 import argparse
 import json
+import sys
 
 from core import REPORT_WRITER
 from judge import JudgeManager, StaticMuriChecker
@@ -12,14 +13,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description="Simai Muri Detector"
     )
-    parser.add_argument("-f", "--file", required=True, type=pathlib.Path)
+    parser.add_argument("-f", "--file", default=None, type=pathlib.Path)
     parser.add_argument("-o", "--output", default=None, type=pathlib.Path)
     parser.add_argument("-j", "--json", default=None, type=pathlib.Path)
     parser.add_argument("--first", default=0.0, type=float)
     namespace = parser.parse_args()
 
-    with namespace.file.open("r", encoding="u8") as f:
-        chart_str = f.read()
+    if namespace.file is not None:
+        with namespace.file.open("r", encoding="u8") as f:
+            chart_str = f.read()
+    else:
+        chart_str = sys.stdin.read()
     chart = SimaiParser.parse_simai_chart(chart_str, namespace.first)
     actions = NoteActionConverter.generate_action(chart)
     total = len(chart)
